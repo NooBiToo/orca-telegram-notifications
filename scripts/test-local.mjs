@@ -1,7 +1,7 @@
 // Локальная обкатка логики воркера без Orca: подставляем stub-объект orca
 // и прогоняем сценарии. Запуск: node scripts/test-local.mjs
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, writeFileSync, copyFileSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, copyFileSync, mkdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -20,9 +20,15 @@ function check(name, cond, extra = '') {
 }
 
 // Изолированная песочница: копия main.mjs + свой config.json на сценарий.
+function stageWorker(dir) {
+  mkdirSync(join(dir, 'scripts'), { recursive: true })
+  copyFileSync(join(root, 'main.mjs'), join(dir, 'main.mjs'))
+  copyFileSync(join(root, 'scripts', 'settings-server.mjs'), join(dir, 'scripts', 'settings-server.mjs'))
+}
+
 function freshWorker(config) {
   const dir = mkdtempSync(join(tmpdir(), 'tg-plugin-'))
-  copyFileSync(join(root, 'main.mjs'), join(dir, 'main.mjs'))
+  stageWorker(dir)
   writeFileSync(join(dir, 'config.json'), JSON.stringify(config))
   return import(pathToFileURL(join(dir, 'main.mjs')).href)
 }
@@ -45,6 +51,11 @@ function freshWorker(config) {
   const cfgAll = normalizeConfig({ botToken: 'x', chatId: '1', notifyOnAll: true })
   check('notifyOnAll — шлём любой', shouldNotify(cfgAll, 'working', new Map(), t).notify === true)
   check('пустой статус — молчим', shouldNotify(cfg, '', new Map(), t).notify === false)
+  const cfgWt = normalizeConfig({ botToken: 'x', chatId: '1', states: ['done'], worktrees: ['gt-'] })
+  check('фильтр воркспейсов: совпал — шлём', shouldNotify(cfgWt, 'done', new Map(), t, 'gt-backend/fix').notify === true)
+  check('фильтр воркспейсов: не совпал — молчим', shouldNotify(cfgWt, 'done', new Map(), t, 'other/x').notify === false)
+  check('фильтр воркспейсов: null id — молчим', shouldNotify(cfgWt, 'done', new Map(), t, null).notify === false)
+  check('без фильтра null id — шлём', shouldNotify(cfg, 'done', new Map(), t, null).notify === true)
 }
 
 // 2. normalizeConfig: дефолты и типы
@@ -60,7 +71,7 @@ function freshWorker(config) {
 // 3. configProblem: отсутствующий/битый файл, без токена
 {
   const dir = mkdtempSync(join(tmpdir(), 'tg-plugin-'))
-  copyFileSync(join(root, 'main.mjs'), join(dir, 'main.mjs'))
+  stageWorker(dir)
   // config.json намеренно не пишем, HOME пустой
   const { loadConfig, configProblem } = await import(
     pathToFileURL(join(dir, 'main.mjs')).href
@@ -71,9 +82,8 @@ function freshWorker(config) {
 
 // 3б. Пользовательский конфиг ~/.orca-plugin-config — приоритетный источник
 {
-  const { writeFileSync, mkdirSync } = await import('node:fs')
   const dir = mkdtempSync(join(tmpdir(), 'tg-plugin-'))
-  copyFileSync(join(root, 'main.mjs'), join(dir, 'main.mjs'))
+  stageWorker(dir)
   const userDir = join(FAKE_HOME, '.orca-plugin-config')
   mkdirSync(userDir, { recursive: true })
   writeFileSync(
@@ -94,7 +104,7 @@ function freshWorker(config) {
   process.env.USERPROFILE = mkdtempSync(join(tmpdir(), 'tg-home-'))
   process.env.HOME = process.env.USERPROFILE
   const dir = mkdtempSync(join(tmpdir(), 'tg-plugin-'))
-  copyFileSync(join(root, 'main.mjs'), join(dir, 'main.mjs'))
+  stageWorker(dir)
   writeFileSync(
     join(dir, 'config.json'),
     JSON.stringify({ botToken: 'x', chatId: '1', dryRun: true, quietSeconds: 0 })
@@ -103,6 +113,7 @@ function freshWorker(config) {
 
   const logs = []
   const notifications = []
+  const storageWrites = []
   const handlers = {}
   const commands = {}
   const orca = {
@@ -112,6 +123,8 @@ function freshWorker(config) {
     host: {
       call: async (method, params) => {
         if (method === 'notifications.show') notifications.push(params)
+        if (method === 'storage.set') storageWrites.push(params)
+        if (method === 'storage.get') return { value: null }
         return { ok: true }
       }
     }
@@ -126,9 +139,9 @@ function freshWorker(config) {
   check('send-test показал уведомление', notifications.some((n) => (n.body || '').includes('dryRun')))
 
   handlers['agent.status.changed']({ worktreeId: 'wt-1', paneKey: 'pane-9', state: 'done', receivedAt: Date.now() })
-  await new Promise((r) => setTimeout(r, 50))
+  await new Promise((r) => setTimeout(r, 80))
   check('событие done дошло до лога отправки', logs.some((l) => l.includes('отправлено в Telegram: done')))
-  check('в тексте есть воркспейс', logs.length >= 0) // текст уходит в dryRun-результат
+  check('антидребезг сохранён в storage', storageWrites.some((w) => w.key === 'lastNotify' && w.value && typeof w.value.done === 'number'))
 
   const summary = await commands['send-summary']()
   check('send-summary ok', summary.ok === true)

@@ -17,6 +17,7 @@
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
+import { startSettingsServer } from './scripts/settings-server.mjs'
 
 const PLUGIN_ROOT = dirname(fileURLToPath(import.meta.url))
 const LOCAL_CONFIG_FILE = join(PLUGIN_ROOT, 'config.json')
@@ -70,10 +71,14 @@ export function normalizeConfig(raw) {
   const states = Array.isArray(raw.states)
     ? raw.states.map((s) => String(s).toLowerCase()).filter(Boolean)
     : DEFAULT_STATES
+  const worktrees = Array.isArray(raw.worktrees)
+    ? raw.worktrees.map((s) => String(s).toLowerCase()).filter(Boolean)
+    : []
   return {
     botToken: typeof raw.botToken === 'string' ? raw.botToken.trim() : '',
     chatId: raw.chatId !== undefined && raw.chatId !== null ? String(raw.chatId).trim() : '',
     states,
+    worktrees,
     notifyOnAll: raw.notifyOnAll === true,
     quietSeconds:
       Number.isFinite(raw.quietSeconds) && raw.quietSeconds >= 0
@@ -95,9 +100,14 @@ export function configProblem(config) {
 
 // ---- решение «слать или нет» ---------------------------------------------
 
-export function shouldNotify(config, state, lastMap, now = Date.now()) {
+export function shouldNotify(config, state, lastMap, now = Date.now(), worktreeId = null) {
   const s = String(state ?? '').toLowerCase()
   if (!s) return { notify: false, reason: 'пустой статус' }
+  if (config.worktrees.length > 0) {
+    const wt = String(worktreeId ?? '').toLowerCase()
+    const matched = wt && config.worktrees.some((keyword) => wt.includes(keyword))
+    if (!matched) return { notify: false, reason: `воркспейс «${wt || '—'}» не в фильтре` }
+  }
   const matched = config.notifyOnAll || config.states.some((keyword) => s.includes(keyword))
   if (!matched) return { notify: false, reason: `статус «${s}» не в списке` }
   const key = state
@@ -158,21 +168,69 @@ export function formatTime(ts) {
 
 // ---- активация ------------------------------------------------------------
 
-// Хранится в памяти воркера; пережить рефORK не критично — антидребезг
-// только гасит повторы, а не теряет события.
+// Хранится в памяти воркера И дублируется в storage хоста: воркер может быть
+// перезапущен между событиями, персистентный антидребезг переживает это.
 const lastNotified = new Map()
+let throttleLoaded = false
 let setupHintShown = false
+let setup = null // { url, close, heartbeat }
 
-function announceSetupProblem(orca, problem) {
+async function loadThrottle(orca) {
+  if (throttleLoaded) return lastNotified
+  throttleLoaded = true
+  const stored = await orca.host.call('storage.get', { key: 'lastNotify' }).catch(() => null)
+  if (stored?.value && typeof stored.value === 'object') {
+    const now = Date.now()
+    for (const [key, at] of Object.entries(stored.value)) {
+      if (typeof at === 'number' && now - at < 3_600_000) lastNotified.set(key, at)
+    }
+  }
+  return lastNotified
+}
+
+async function saveThrottle(orca) {
+  const value = Object.fromEntries(lastNotified)
+  await orca.host.call('storage.set', { key: 'lastNotify', value }).catch(() => undefined)
+}
+
+function announceSetupProblem(orca, problem, url = null) {
   orca.log(`пропущено: ${problem}`)
   if (setupHintShown) return
   setupHintShown = true
   void orca.host
     .call('notifications.show', {
       title: 'Telegram Notifications не настроен',
-      body: 'Точная команда настройки — в логе плагина (кнопка Logs в карточке плагина).'
+      body: url
+        ? `Откройте страницу настройки: ${url}`
+        : 'Команда настройки — в логе плагина (кнопка Logs в карточке плагина).'
     })
     .catch(() => undefined)
+}
+
+// Поднимает страницу настройки прямо из воркера. Воркер без активности
+// гасится хостом через 5 минут, поэтому в режиме настройки шлём heartbeat
+// в лог каждые 60с (максимум 15 минут); как только конфиг стал валиден —
+// сервер закрывается.
+async function ensureSetupServer(orca, { autoOpen = false } = {}) {
+  if (setup) return setup.url
+  try {
+    setup = await startSettingsServer({ portStart: 8791, portEnd: 8799, autoOpen })
+  } catch (error) {
+    orca.log(`не удалось поднять страницу настройки: ${String(error?.message ?? error)}`)
+    return null
+  }
+  orca.log(`страница настройки: ${setup.url}`)
+  const startedAt = Date.now()
+  const timer = setInterval(() => {
+    if (Date.now() - startedAt > 15 * 60_000 || !configProblem(loadConfig(0))) {
+      clearInterval(timer)
+      void setup?.close()
+      setup = null
+      return
+    }
+    orca.log(`страница настройки активна: ${setup.url}`)
+  }, 60_000)
+  return setup.url
 }
 
 export default function activate(orca) {
@@ -180,10 +238,16 @@ export default function activate(orca) {
     const config = loadConfig()
     const problem = configProblem(config)
     if (problem) {
-      announceSetupProblem(orca, problem)
+      const url = await ensureSetupServer(orca)
+      announceSetupProblem(orca, problem, url)
       return
     }
-    const decision = shouldNotify(config, payload.state, lastNotified)
+    if (setup) {
+      await setup.close()
+      setup = null
+    }
+    const throttle = await loadThrottle(orca)
+    const decision = shouldNotify(config, payload.state, throttle, Date.now(), payload.worktreeId)
     if (!decision.notify) {
       orca.log(`тихо: ${decision.reason} (${payload.paneKey})`)
       return
@@ -199,6 +263,7 @@ export default function activate(orca) {
       .join('\n')
     const result = await sendTelegram(config, text)
     if (result.ok) {
+      await saveThrottle(orca)
       orca.log(`отправлено в Telegram: ${payload.state} (${payload.paneKey})`)
     } else {
       orca.log(`ошибка отправки: ${result.error}`)
@@ -215,7 +280,11 @@ export default function activate(orca) {
     const config = loadConfig(0)
     const problem = configProblem(config)
     if (problem) {
-      await orca.host.call('notifications.show', { title: 'Telegram', body: problem })
+      const url = await ensureSetupServer(orca, { autoOpen: true })
+      const body = url
+        ? `Открыта страница настройки: ${url}`
+        : `Настройка: ${setupHint()}`
+      await orca.host.call('notifications.show', { title: 'Telegram', body })
       return { ok: false, error: problem }
     }
     const result = await sendTelegram(config, '✅ Тест из Orca: плагин Telegram Notifications работает')
@@ -236,6 +305,7 @@ export default function activate(orca) {
     const text = [
       '⚙️ Telegram Notifications · конфиг',
       `Статусы: ${config.notifyOnAll ? 'все' : config.states.join(', ')}`,
+      config.worktrees.length ? `Воркспейсы: ${config.worktrees.join(', ')}` : 'Воркспейсы: все',
       `Антидребезг: ${config.quietSeconds}с · беззвучно: ${config.silent ? 'да' : 'нет'} · dryRun: ${config.dryRun ? 'да' : 'нет'}`
     ].join('\n')
     return sendTelegram(config, text)
