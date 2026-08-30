@@ -14,6 +14,7 @@ process.env.USERPROFILE = FAKE_HOME
 process.env.HOME = FAKE_HOME
 
 let failures = 0
+let lastWorkerModule = null
 function check(name, cond, extra = '') {
   console.log(`${cond ? 'PASS' : 'FAIL'}  ${name}${cond ? '' : '  ' + extra}`)
   if (!cond) failures++
@@ -110,6 +111,7 @@ function freshWorker(config) {
     JSON.stringify({ botToken: 'x', chatId: '1', dryRun: true, quietSeconds: 0 })
   )
   const mod = await import(pathToFileURL(join(dir, 'main.mjs')).href)
+  lastWorkerModule = mod
 
   const logs = []
   const notifications = []
@@ -166,5 +168,6 @@ function freshWorker(config) {
   check('фейковый токен — ошибка от Telegram API', result.ok === false, JSON.stringify(result))
 }
 
+await lastWorkerModule?.closeSetupServer?.().catch?.(() => undefined)
 console.log(failures === 0 ? '\nВСЕ ПРОВЕРКИ ПРОЙДЕНЫ' : `\nПРОВАЛОВ: ${failures}`)
 process.exit(failures === 0 ? 0 : 1)

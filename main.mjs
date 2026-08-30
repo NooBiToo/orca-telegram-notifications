@@ -173,7 +173,8 @@ export function formatTime(ts) {
 const lastNotified = new Map()
 let throttleLoaded = false
 let setupHintShown = false
-let setup = null // { url, close, heartbeat }
+let setup = null // { url, browse, close }
+let setupHeartbeat = null
 
 async function loadThrottle(orca) {
   if (throttleLoaded) return lastNotified
@@ -224,17 +225,27 @@ async function ensureSetupServer(orca, { autoOpen = false } = {}) {
   }
   orca.log(`страница настройки: ${setup.url}`)
   const startedAt = Date.now()
-  const timer = setInterval(() => {
+  setupHeartbeat = setInterval(() => {
     if (Date.now() - startedAt > 15 * 60_000) {
-      clearInterval(timer)
-      void setup?.close()
-      setup = null
+      void closeSetupServer()
       orca.log('страница настройки закрыта (таймаут) — откройте заново командой')
       return
     }
     orca.log(`страница настройки активна: ${setup.url}`)
   }, 60_000)
   return setup.url
+}
+
+export async function closeSetupServer() {
+  if (setupHeartbeat) {
+    clearInterval(setupHeartbeat)
+    setupHeartbeat = null
+  }
+  if (setup) {
+    const closing = setup
+    setup = null
+    await closing.close()
+  }
 }
 
 export default function activate(orca) {

@@ -349,7 +349,7 @@ export async function startSettingsServer(options = {}) {
     url,
     browse,
     close() {
-      server.closeAllConnections?.()
+      server.closeIdleConnections?.()
       return new Promise((resolve) => server.close(resolve))
     }
   }
