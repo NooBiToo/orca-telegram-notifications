@@ -43,20 +43,17 @@
       (например, напишите боту <code>@userinfobot</code>).
     </div>
     <div class="box">
-      <strong>Шаг 3. Интерфейс настроек.</strong> В терминале выполните
-      <br /><code>node scripts/settings-server.mjs</code>
-      <br />из папки плагина — откроется форма
+      <strong>Шаг 3. Интерфейс настроек.</strong> Точная команда — в логе
+      этого плагина (кнопка <code>Logs</code> ниже): скопируйте и выполните
+      <code>node "…\scripts\settings-server.mjs"</code>. Откроется форма
       <code>http://127.0.0.1:8791</code>: токен, chat id, фильтр статусов,
-      кнопка «Тест отправки». Она пишет тот же
-      <code>config.json</code>.
+      кнопка «Тест отправки». Конфиг сохраняется в профиль пользователя
+      (<code>~\.orca-plugin-config\</code>) — папка плагина остаётся
+      нетронутой.
     </div>
     <div class="box">
-      <strong>Шаг 3б.</strong> Либо заполните
-      <code>config.json</code> в папке плагина вручную:
-      <br /><code>botToken</code> и <code>chatId</code>.
-      <br />Опционально: <code>states</code> (какие статусы слать),
-      <code>notifyOnAll</code>, <code>quietSeconds</code>, <code>silent</code>,
-      <code>dryRun</code>.
+      <strong>Шаг 3б.</strong> Для dev-копии плагина можно просто заполнить
+      <code>config.json</code> рядом с манифестом.
     </div>
     <div class="box">
       <strong>Шаг 4.</strong> Палитра команд (Quick Commands) →

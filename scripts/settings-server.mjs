@@ -3,24 +3,35 @@
 // отправку. Только для локального доступа (bind 127.0.0.1).
 
 import { createServer } from 'node:http'
-import { readFileSync, writeFileSync, existsSync } from 'node:fs'
+import { readFileSync, writeFileSync, mkdirSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)))
-const CONFIG_FILE = join(ROOT, 'config.json')
+const LOCAL_CONFIG = join(ROOT, 'config.json')
+// Пользовательский конфиг — вне неизменяемого дерева плагина (при установке
+// из git хост проверяет хеш папки плагина, правки внутри сломают проверку).
+const USER_CONFIG = join(
+  process.env.USERPROFILE || process.env.HOME || '.',
+  '.orca-plugin-config',
+  'telegram-notifications.json'
+)
+const WRITE_LOCAL = process.argv.includes('--local')
+const CONFIG_FILE = WRITE_LOCAL ? LOCAL_CONFIG : USER_CONFIG
 const PORT = Number(process.argv.find((a, i) => process.argv[i - 1] === '--port') ?? 8791) || 8791
 const NO_OPEN = process.argv.includes('--no-open')
 
 const FIELDS = ['botToken', 'chatId', 'states', 'notifyOnAll', 'quietSeconds', 'silent', 'dryRun']
 
 function readConfig() {
-  if (!existsSync(CONFIG_FILE)) return {}
-  try {
-    return JSON.parse(readFileSync(CONFIG_FILE, 'utf8'))
-  } catch {
-    return {}
+  for (const path of [USER_CONFIG, LOCAL_CONFIG]) {
+    try {
+      return JSON.parse(readFileSync(path, 'utf8'))
+    } catch {
+      // нет файла или не читается — пробуем следующий источник
+    }
   }
+  return {}
 }
 
 function esc(value) {
@@ -170,6 +181,7 @@ const server = createServer(async (req, res) => {
     // /save
     const config = buildConfig(fields)
     const warning = validate(config)
+    mkdirSync(dirname(CONFIG_FILE), { recursive: true })
     writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2) + '\n')
     res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
     res.end(

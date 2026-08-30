@@ -7,6 +7,12 @@ import { join, dirname } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)))
+
+// Изолируем «дом» — loadConfig/resolution читает USERPROFILE/HOME на вызов.
+const FAKE_HOME = mkdtempSync(join(tmpdir(), 'tg-home-'))
+process.env.USERPROFILE = FAKE_HOME
+process.env.HOME = FAKE_HOME
+
 let failures = 0
 function check(name, cond, extra = '') {
   console.log(`${cond ? 'PASS' : 'FAIL'}  ${name}${cond ? '' : '  ' + extra}`)
@@ -55,7 +61,7 @@ function freshWorker(config) {
 {
   const dir = mkdtempSync(join(tmpdir(), 'tg-plugin-'))
   copyFileSync(join(root, 'main.mjs'), join(dir, 'main.mjs'))
-  // config.json намеренно не пишем
+  // config.json намеренно не пишем, HOME пустой
   const { loadConfig, configProblem } = await import(
     pathToFileURL(join(dir, 'main.mjs')).href
   )
@@ -63,8 +69,30 @@ function freshWorker(config) {
   check('нет config.json — проблема описана', (configProblem(missing) || '').includes('не найден'))
 }
 
+// 3б. Пользовательский конфиг ~/.orca-plugin-config — приоритетный источник
+{
+  const { writeFileSync, mkdirSync } = await import('node:fs')
+  const dir = mkdtempSync(join(tmpdir(), 'tg-plugin-'))
+  copyFileSync(join(root, 'main.mjs'), join(dir, 'main.mjs'))
+  const userDir = join(FAKE_HOME, '.orca-plugin-config')
+  mkdirSync(userDir, { recursive: true })
+  writeFileSync(
+    join(userDir, 'telegram-notifications.json'),
+    JSON.stringify({ botToken: 'user:token', chatId: '777' })
+  )
+  const { loadConfig } = await import(pathToFileURL(join(dir, 'main.mjs')).href)
+  const cfg = loadConfig(0)
+  check(
+    'пользовательский конфиг найден вне папки плагина',
+    cfg.botToken === 'user:token' && cfg.chatId === '777'
+  )
+}
+
 // 4. Полный activate с dryRun: команды + событие, stub orca
 {
+  // Своя пустая «домашняя» папка, чтобы пользовательский конфиг из 3б не мешал
+  process.env.USERPROFILE = mkdtempSync(join(tmpdir(), 'tg-home-'))
+  process.env.HOME = process.env.USERPROFILE
   const dir = mkdtempSync(join(tmpdir(), 'tg-plugin-'))
   copyFileSync(join(root, 'main.mjs'), join(dir, 'main.mjs'))
   writeFileSync(

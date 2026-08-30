@@ -3,23 +3,24 @@
 // modules and global fetch are available. The capability gate covers only
 // the orca.host bridge, not the Node stdlib.
 //
-// Конфиг читается из config.json рядом с манифестом (см. config.example.json):
-// {
-//   "botToken": "123456:ABC-DEF...",   // токен @BotFather
-//   "chatId": "123456789",             // id чата/канала (или "@channelname")
-//   "states": ["done", "attention", "stuck", "error", "waiting", "needs"],
-//   "notifyOnAll": false,              // true — слать на любой статус
-//   "quietSeconds": 60,                // антидребезг: пауза между повторами
-//   "silent": false,                   // беззвучная доставка в Telegram
-//   "dryRun": false                    // true — печатать вместо отправки
-// }
+// Конфиг читается из двух мест (первый найденный):
+//   1. ~/.orca-plugin-config/telegram-notifications.json  — пользовательский
+//      (главный для установки из git: папка плагина неизменяема, хост
+//      проверяет её хеш — правки внутри сломают проверку целостности)
+//   2. config.json рядом с main.mjs                       — удобно в dev
+// Поля:
+//   botToken   — токен @BotFather (обязательно)
+//   chatId     — id чата/канала или "@channelname" (обязательно)
+//   states     — ключевые слова фильтра статусов
+//   notifyOnAll, quietSeconds, silent, dryRun
 
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 
 const PLUGIN_ROOT = dirname(fileURLToPath(import.meta.url))
-const CONFIG_FILE = join(PLUGIN_ROOT, 'config.json')
+const LOCAL_CONFIG_FILE = join(PLUGIN_ROOT, 'config.json')
+const SERVER_FILE = join(PLUGIN_ROOT, 'scripts', 'settings-server.mjs')
 
 const DEFAULT_STATES = ['done', 'attention', 'stuck', 'error', 'waiting', 'needs']
 const QUIET_DEFAULT_SECONDS = 60
@@ -27,29 +28,42 @@ const FETCH_TIMEOUT_MS = 10_000
 
 // ---- конфиг ---------------------------------------------------------------
 
+export function configPaths() {
+  const home = process.env.USERPROFILE || process.env.HOME || ''
+  const userLevel = home
+    ? join(home, '.orca-plugin-config', 'telegram-notifications.json')
+    : null
+  return { userLevel, local: LOCAL_CONFIG_FILE, server: SERVER_FILE }
+}
+
+export function setupHint() {
+  return `node "${configPaths().server}"`
+}
+
 let cachedConfig = null
 let cachedAt = 0
 
 export function loadConfig(maxAgeMs = 30_000) {
   if (cachedConfig && Date.now() - cachedAt < maxAgeMs) return cachedConfig
-  let raw
-  try {
-    raw = readFileSync(CONFIG_FILE, 'utf8')
-  } catch {
-    cachedConfig = { __missing: true }
+  const { userLevel, local } = configPaths()
+  for (const path of [userLevel, local].filter(Boolean)) {
+    let raw
+    try {
+      raw = readFileSync(path, 'utf8')
+    } catch {
+      continue // файла нет — пробуем следующий путь
+    }
+    try {
+      cachedConfig = { ...normalizeConfig(JSON.parse(raw)), __source: path }
+    } catch (error) {
+      cachedConfig = { __invalid: `${path}: ${String(error)}` }
+    }
     cachedAt = Date.now()
     return cachedConfig
   }
-  try {
-    const parsed = JSON.parse(raw)
-    cachedConfig = normalizeConfig(parsed)
-    cachedAt = Date.now()
-    return cachedConfig
-  } catch (error) {
-    cachedConfig = { __invalid: String(error) }
-    cachedAt = Date.now()
-    return cachedConfig
-  }
+  cachedConfig = { __missing: true }
+  cachedAt = Date.now()
+  return cachedConfig
 }
 
 export function normalizeConfig(raw) {
@@ -71,10 +85,11 @@ export function normalizeConfig(raw) {
 }
 
 export function configProblem(config) {
-  if (config.__missing) return 'config.json не найден рядом с main.mjs (см. config.example.json)'
-  if (config.__invalid) return `config.json не читается: ${config.__invalid}`
-  if (!config.botToken) return 'в config.json не задан botToken (токен от @BotFather)'
-  if (!config.chatId) return 'в config.json не задан chatId'
+  if (config.__missing)
+    return `конфиг не найден. Настройка: ${setupHint()}`
+  if (config.__invalid) return `конфиг не читается: ${config.__invalid}`
+  if (!config.botToken) return 'не задан botToken (токен от @BotFather)'
+  if (!config.chatId) return 'не задан chatId'
   return null
 }
 
@@ -146,13 +161,26 @@ export function formatTime(ts) {
 // Хранится в памяти воркера; пережить рефORK не критично — антидребезг
 // только гасит повторы, а не теряет события.
 const lastNotified = new Map()
+let setupHintShown = false
+
+function announceSetupProblem(orca, problem) {
+  orca.log(`пропущено: ${problem}`)
+  if (setupHintShown) return
+  setupHintShown = true
+  void orca.host
+    .call('notifications.show', {
+      title: 'Telegram Notifications не настроен',
+      body: 'Точная команда настройки — в логе плагина (кнопка Logs в карточке плагина).'
+    })
+    .catch(() => undefined)
+}
 
 export default function activate(orca) {
   async function handleEvent(payload) {
     const config = loadConfig()
     const problem = configProblem(config)
     if (problem) {
-      orca.log(`пропущено: ${problem}`)
+      announceSetupProblem(orca, problem)
       return
     }
     const decision = shouldNotify(config, payload.state, lastNotified)
