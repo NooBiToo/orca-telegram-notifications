@@ -33,8 +33,15 @@ Telegram Bot API:
 
 1. Создайте бота у [@BotFather](https://t.me/BotFather) — получите токен.
 2. Узнайте свой `chat_id` (напишите боту [@userinfobot](https://t.me/userinfobot)).
-3. Скопируйте `config.example.json` → `config.json` рядом с манифестом
-   и заполните:
+3. Откройте интерфейс настроек — из папки плагина:
+
+```bash
+node scripts/settings-server.mjs
+```
+
+откроется `http://127.0.0.1:8791` — форма с токеном, chat id, фильтром
+статусов и кнопкой **«Тест отправки»** (бьёт в настоящий Telegram API).
+Кнопка «Сохранить» пишет `config.json`:
 
 ```json
 {
@@ -47,6 +54,8 @@ Telegram Bot API:
   "dryRun": false
 }
 ```
+
+То же самое можно сделать руками — просто отредактировав `config.json`.
 
 | Поле | Смысл |
 |---|---|
