@@ -138,6 +138,16 @@ function freshWorker(config) {
   check('send-test ok (dryRun)', testResult.ok === true && testResult.dryRun === true)
   check('send-test показал уведомление', notifications.some((n) => (n.body || '').includes('dryRun')))
 
+  const openResult = await commands['open-settings']()
+  check('open-settings стартует сервер при валидном конфиге', openResult.ok === true && typeof openResult.url === 'string')
+  try {
+    const health = await fetch(openResult.url.replace(/\/$/, '') + '/health')
+    const healthBody = await health.json()
+    check('страница настройки отвечает /health', healthBody.ok === true)
+  } catch (error) {
+    check('страница настройки отвечает /health', false, String(error))
+  }
+
   handlers['agent.status.changed']({ worktreeId: 'wt-1', paneKey: 'pane-9', state: 'done', receivedAt: Date.now() })
   await new Promise((r) => setTimeout(r, 80))
   check('событие done дошло до лога отправки', logs.some((l) => l.includes('отправлено в Telegram: done')))

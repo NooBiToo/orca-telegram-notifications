@@ -207,12 +207,15 @@ function announceSetupProblem(orca, problem, url = null) {
     .catch(() => undefined)
 }
 
-// Поднимает страницу настройки прямо из воркера. Воркер без активности
-// гасится хостом через 5 минут, поэтому в режиме настройки шлём heartbeat
-// в лог каждые 60с (максимум 15 минут); как только конфиг стал валиден —
-// сервер закрывается.
+// Поднимает страницу настройки прямо из воркера и держит её до 15 минут
+// (воркер без активности хост гасит через 5 минут, поэтому в режиме страницы
+// шлём heartbeat в лог каждые 60с). Вызывается командой open-settings
+// и автоматически — когда конфиг не найден/не валиден.
 async function ensureSetupServer(orca, { autoOpen = false } = {}) {
-  if (setup) return setup.url
+  if (setup) {
+    if (autoOpen) setup.browse(setup.url)
+    return setup.url
+  }
   try {
     setup = await startSettingsServer({ portStart: 8791, portEnd: 8799, autoOpen })
   } catch (error) {
@@ -222,10 +225,11 @@ async function ensureSetupServer(orca, { autoOpen = false } = {}) {
   orca.log(`страница настройки: ${setup.url}`)
   const startedAt = Date.now()
   const timer = setInterval(() => {
-    if (Date.now() - startedAt > 15 * 60_000 || !configProblem(loadConfig(0))) {
+    if (Date.now() - startedAt > 15 * 60_000) {
       clearInterval(timer)
       void setup?.close()
       setup = null
+      orca.log('страница настройки закрыта (таймаут) — откройте заново командой')
       return
     }
     orca.log(`страница настройки активна: ${setup.url}`)
@@ -234,6 +238,26 @@ async function ensureSetupServer(orca, { autoOpen = false } = {}) {
 }
 
 export default function activate(orca) {
+  orca.commands.register('open-settings', async () => {
+    const url = await ensureSetupServer(orca, { autoOpen: true })
+    if (!url) {
+      await orca.host
+        .call('notifications.show', {
+          title: 'Telegram Notifications',
+          body: 'Не удалось открыть страницу настройки — детали в логе плагина.'
+        })
+        .catch(() => undefined)
+      return { ok: false }
+    }
+    await orca.host
+      .call('notifications.show', {
+        title: 'Telegram Notifications',
+        body: `Страница настроек: ${url}`
+      })
+      .catch(() => undefined)
+    return { ok: true, url }
+  })
+
   async function handleEvent(payload) {
     const config = loadConfig()
     const problem = configProblem(config)
@@ -241,10 +265,6 @@ export default function activate(orca) {
       const url = await ensureSetupServer(orca)
       announceSetupProblem(orca, problem, url)
       return
-    }
-    if (setup) {
-      await setup.close()
-      setup = null
     }
     const throttle = await loadThrottle(orca)
     const decision = shouldNotify(config, payload.state, throttle, Date.now(), payload.worktreeId)

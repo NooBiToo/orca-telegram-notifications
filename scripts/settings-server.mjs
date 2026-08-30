@@ -336,13 +336,18 @@ export async function startSettingsServer(options = {}) {
     tryPort(portStart)
   })
 
-  if (options.autoOpen && process.platform === 'win32') {
-    const { spawn } = await import('node:child_process')
-    spawn('cmd', ['/c', 'start', '', url], { detached: true, stdio: 'ignore' }).unref()
+  const browse = (target = url) => {
+    if (process.platform !== 'win32') return
+    import('node:child_process').then(({ spawn }) => {
+      spawn('cmd', ['/c', 'start', '', target], { detached: true, stdio: 'ignore' }).unref()
+    })
   }
+
+  if (options.autoOpen) browse(url)
 
   return {
     url,
+    browse,
     close() {
       server.closeAllConnections?.()
       return new Promise((resolve) => server.close(resolve))
