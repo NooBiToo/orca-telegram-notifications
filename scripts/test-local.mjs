@@ -140,11 +140,18 @@ function freshWorker(config) {
   check('send-test ok (dryRun)', testResult.ok === true && testResult.dryRun === true)
   check('send-test показал уведомление', notifications.some((n) => (n.body || '').includes('dryRun')))
 
-  const openResult = await commands['open-settings']()
+  const openResult = await commands['open-settings']({ autoOpen: false })
   check('open-settings стартует сервер при валидном конфиге', openResult.ok === true && typeof openResult.url === 'string')
   try {
-    const health = await fetch(openResult.url.replace(/\/$/, '') + '/health')
-    const healthBody = await health.json()
+    const httpMod = await import('node:http')
+    const healthBody = await new Promise((resolve, reject) => {
+      const request = httpMod.get(openResult.url + '/health', { connection: 'close' }, (response) => {
+        let raw = ''
+        response.on('data', (chunk) => (raw += chunk))
+        response.on('end', () => resolve(JSON.parse(raw)))
+      })
+      request.on('error', reject)
+    })
     check('страница настройки отвечает /health', healthBody.ok === true)
   } catch (error) {
     check('страница настройки отвечает /health', false, String(error))

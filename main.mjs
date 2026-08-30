@@ -77,6 +77,7 @@ export function normalizeConfig(raw) {
   return {
     botToken: typeof raw.botToken === 'string' ? raw.botToken.trim() : '',
     chatId: raw.chatId !== undefined && raw.chatId !== null ? String(raw.chatId).trim() : '',
+    language: raw.language === 'ru' ? 'ru' : 'en',
     states,
     worktrees,
     notifyOnAll: raw.notifyOnAll === true,
@@ -120,6 +121,66 @@ export function shouldNotify(config, state, lastMap, now = Date.now(), worktreeI
   return { notify: true, reason: `статус «${s}»` }
 }
 
+// ---- формат сообщения -----------------------------------------------------
+
+const STATE_META = {
+  done: { emoji: '✅', ru: 'Агент завершил работу', en: 'Agent finished' },
+  attention: { emoji: '🙋', ru: 'Агент ждёт вашего внимания', en: 'Agent needs your attention' },
+  needs: { emoji: '🙋', ru: 'Агент ждёт вашего внимания', en: 'Agent needs your attention' },
+  stuck: { emoji: '⚠️', ru: 'Похоже, агент застрял', en: 'Agent looks stuck' },
+  error: { emoji: '❌', ru: 'У агента ошибка', en: 'Agent hit an error' },
+  waiting: { emoji: '⏳', ru: 'Агент ожидает', en: 'Agent is waiting' },
+  working: { emoji: '🔧', ru: 'Агент работает', en: 'Agent is working' },
+  idle: { emoji: '💤', ru: 'Агент простаивает', en: 'Agent is idle' }
+}
+
+const STATE_KEYS = ['done', 'attention', 'needs', 'stuck', 'error', 'waiting', 'working', 'idle']
+
+export function describeState(state, language = 'en') {
+  const s = String(state ?? '').toLowerCase()
+  for (const key of STATE_KEYS) {
+    if (s.includes(key)) {
+      const meta = STATE_META[key]
+      return { emoji: meta.emoji, title: meta[language] ?? meta.en }
+    }
+  }
+  return { emoji: '🤖', title: (language === 'ru' ? 'Статус: ' : 'Status: ') + String(state ?? '') }
+}
+
+function escHtml(value) {
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+}
+
+// Сообщение в формате Telegram HTML. Без шаблона — осмысленный дефис:
+// эмодзи и человеческий заголовок по типу статуса, воркспейс, время, агент.
+// config.template (опционально) — свой формат с подстановками
+// {{emoji}} {{title}} {{worktree}} {{state}} {{time}} {{pane}}.
+export function buildMessage(config, payload, now = Date.now()) {
+  const language = config.language === 'ru' ? 'ru' : 'en'
+  const { emoji, title } = describeState(payload.state, language)
+  const time = formatTime(payload.receivedAt ?? now)
+  const worktree = payload.worktreeId ? escHtml(payload.worktreeId) : null
+  const pane = payload.paneKey ? escHtml(payload.paneKey) : null
+  if (typeof config.template === 'string' && config.template.trim()) {
+    return config.template
+      .replaceAll('{{emoji}}', emoji)
+      .replaceAll('{{title}}', escHtml(title))
+      .replaceAll('{{worktree}}', worktree ?? '—')
+      .replaceAll('{{state}}', escHtml(String(payload.state ?? '')))
+      .replaceAll('{{time}}', time)
+      .replaceAll('{{pane}}', pane ?? '—')
+  }
+  const lines = [`${emoji} <b>${escHtml(title)}</b>`]
+  if (worktree) lines.push(`📦 <code>${worktree}</code>`)
+  let tail = `🕐 ${time}`
+  if (pane) tail += ` · 🧠 <code>${pane}</code>`
+  lines.push(tail)
+  return lines.join('\n')
+}
+
 // ---- Telegram -------------------------------------------------------------
 
 export async function sendTelegram(config, text) {
@@ -138,6 +199,7 @@ export async function sendTelegram(config, text) {
       body: JSON.stringify({
         chat_id: config.chatId,
         text,
+        parse_mode: 'HTML',
         silent: config.silent,
         disable_web_page_preview: true
       }),
@@ -249,8 +311,10 @@ export async function closeSetupServer() {
 }
 
 export default function activate(orca) {
-  orca.commands.register('open-settings', async () => {
-    const url = await ensureSetupServer(orca, { autoOpen: true })
+  orca.commands.register('open-settings', async (args) => {
+    // Из палитры args нет — открываем браузер. В тестах передают {autoOpen:false}.
+    const autoOpen = args?.autoOpen !== false
+    const url = await ensureSetupServer(orca, { autoOpen })
     if (!url) {
       await orca.host
         .call('notifications.show', {
