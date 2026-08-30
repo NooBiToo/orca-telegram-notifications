@@ -1,0 +1,9 @@
+{
+  "botToken": "123456789:AAAA-ваш-токен-от-BotFather",
+  "chatId": "123456789",
+  "states": ["done", "attention", "stuck", "error", "waiting", "needs"],
+  "notifyOnAll": false,
+  "quietSeconds": 60,
+  "silent": false,
+  "dryRun": true
+}

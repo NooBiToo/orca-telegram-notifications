@@ -1,0 +1,28 @@
+{
+  "manifestVersion": 1,
+  "id": "telegram-notifications",
+  "publisher": "noobitoo",
+  "name": "Telegram Notifications",
+  "version": "0.1.0",
+  "description": "Send Telegram messages when agents change status: done, needs attention, stuck.",
+  "engines": { "orca": ">=1.4.0" },
+  "pluginApi": 1,
+  "main": "main.mjs",
+  "contributes": {
+    "panels": [
+      { "id": "telegram", "title": "Telegram", "icon": "send", "entry": "panel.html" }
+    ],
+    "commands": [
+      { "id": "send-test", "title": "Telegram: Send test message" },
+      { "id": "send-summary", "title": "Telegram: Send config summary" }
+    ],
+    "events": [{ "on": "agent.status.changed" }]
+  },
+  "capabilities": [
+    { "kind": "storage" },
+    { "kind": "secrets" },
+    { "kind": "settings:own" },
+    { "kind": "events:subscribe" },
+    { "kind": "notifications:show" }
+  ]
+}

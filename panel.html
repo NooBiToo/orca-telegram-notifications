@@ -1,0 +1,70 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      /* Хост прокидывает дизайн-токены Orca как CSS custom properties. */
+      body {
+        margin: 0;
+        padding: 12px;
+        font-family: system-ui, sans-serif;
+        font-size: 13px;
+        color: var(--foreground, #ddd);
+        background: var(--background, transparent);
+      }
+      h1 { font-size: 14px; margin: 0 0 8px; }
+      code {
+        background: var(--secondary, #2a2a2a);
+        padding: 1px 5px;
+        border-radius: 4px;
+        font-size: 12px;
+      }
+      ol { margin: 6px 0; padding-left: 20px; }
+      li { margin: 4px 0; }
+      .hint { color: var(--muted-foreground, #999); margin-top: 10px; line-height: 1.45; }
+      .box {
+        border: 1px solid var(--border, #555);
+        border-radius: 6px;
+        padding: 8px 10px;
+        margin: 8px 0;
+        background: var(--secondary, #2a2a2a);
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Telegram Notifications</h1>
+
+    <div class="box">
+      <strong>Шаг 1.</strong> Создайте бота у <code>@BotFather</code> →
+      получите токен.
+    </div>
+    <div class="box">
+      <strong>Шаг 2.</strong> Узнайте свой <code>chat_id</code>
+      (например, напишите боту <code>@userinfobot</code>).
+    </div>
+    <div class="box">
+      <strong>Шаг 3.</strong> Откройте файл
+      <code>config.json</code> в папке плагина и заполните:
+      <br /><code>botToken</code> и <code>chatId</code>.
+      <br />Опционально: <code>states</code> (какие статусы слать),
+      <code>notifyOnAll</code>, <code>quietSeconds</code>, <code>silent</code>,
+      <code>dryRun</code>.
+    </div>
+    <div class="box">
+      <strong>Шаг 4.</strong> Палитра команд (Quick Commands) →
+      <code>Telegram: Send test message</code> — придёт тестовое сообщение.
+    </div>
+
+    <p class="hint">
+      Дальше всё автоматически: когда агент меняет статус на один из выбранных
+      (по умолчанию done / attention / stuck / error / waiting / needs), в
+      Telegram уходит сообщение. Повторы одного статуса гасятся антидребезгом
+      (60 сек по умолчанию).
+    </p>
+    <p class="hint">
+      Панель — только инструкция: песочница панели не имеет доступа к файлам и
+      сети, поэтому токен вводится в config.json. Список команд также виден в
+      журнале воркера ниже (кнопка Logs).
+    </p>
+  </body>
+</html>
