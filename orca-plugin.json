@@ -3,7 +3,7 @@
   "id": "telegram-notifications",
   "publisher": "noobitoo",
   "name": "Telegram Notifications",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "Send Telegram messages when agents change status: done, needs attention, stuck.",
   "engines": { "orca": ">=1.4.0" },
   "pluginApi": 1,

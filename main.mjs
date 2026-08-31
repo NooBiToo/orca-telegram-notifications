@@ -168,13 +168,84 @@ export function localizeStatus(state, language = 'en') {
   return String(state ?? '')
 }
 
-// worktreeId приходит как «uuid::C:/путь/до/воркспейса» — для человека
-// показываем только последнее имя пути.
-export function workspaceName(worktreeId) {
+// ---- имена проекта и воркспейса --------------------------------------------
+
+// worktreeId бывает двух форм: «repoId::путь» (git-воркспейсы) и «folder:id»
+// (папочные). Человеческие имена лежат в сторе Orca
+// profiles/<activeProfileId>/orca-data.json — читаем напрямую; это внутренний
+// файл, может поменяться между версиями Orca, тогда фолбэк на имена из пути.
+function userDataBases() {
+  return [
+    process.env.APPDATA,
+    process.env.HOME ? join(process.env.HOME, 'Library', 'Application Support') : null,
+    process.env.HOME ? join(process.env.HOME, '.config') : null
+  ].filter(Boolean)
+}
+
+function firstReadable(paths) {
+  for (const path of paths) {
+    try {
+      readFileSync(path)
+      return path
+    } catch {
+      // не читается — пробуем следующий
+    }
+  }
+  return null
+}
+
+export function orcaStatusFile() {
+  return firstReadable(userDataBases().map((base) => join(base, 'orca', 'agent-hooks', 'last-status.json')))
+}
+
+let storeCache = null
+let storeCacheAt = 0
+
+export function loadOrcaStore(maxAgeMs = 10_000) {
+  if (storeCache && Date.now() - storeCacheAt < maxAgeMs) return storeCache
+  storeCache = null
+  const indexFile = firstReadable(userDataBases().map((base) => join(base, 'orca', 'orca-profile-index.json')))
+  const profileId = indexFile
+    ? (() => {
+        try {
+          return JSON.parse(readFileSync(indexFile, 'utf8'))?.activeProfileId
+        } catch {
+          return null
+        }
+      })()
+    : null
+  if (indexFile && profileId) {
+    try {
+      storeCache = JSON.parse(readFileSync(join(dirname(indexFile), 'profiles', profileId, 'orca-data.json'), 'utf8'))
+    } catch {
+      storeCache = null
+    }
+  }
+  storeCacheAt = Date.now()
+  return storeCache
+}
+
+function pathBasename(path) {
+  const segments = String(path ?? '').split(/[\\/]+/).filter(Boolean)
+  return segments.length ? segments[segments.length - 1] : null
+}
+
+// Проект — репо или папка (базовое имя пути), воркспейс — его заголовок в
+// Orca (displayName), а без него — имя папки.
+export function describeWorktree(worktreeId, store = loadOrcaStore()) {
   const raw = String(worktreeId ?? '')
-  const path = raw.includes('::') ? raw.split('::').pop() : raw
-  const segments = path.split(/[\\/]+/).filter(Boolean)
-  return segments[segments.length - 1] ?? raw
+  if (raw.startsWith('folder:')) {
+    const folder = (store?.folderWorkspaces ?? []).find((f) => f.id === raw.slice('folder:'.length))
+    if (!folder?.name) return null
+    return { project: pathBasename(folder.folderPath), workspace: folder.name }
+  }
+  const sep = raw.indexOf('::')
+  const workspace = pathBasename(sep >= 0 ? raw.slice(sep + 2) : '')
+  if (!workspace) return null
+  const repo = (store?.repos ?? []).find((r) => r.id === raw.slice(0, sep))
+  const meta = store?.worktreeMeta?.[raw]
+  const title = typeof meta?.displayName === 'string' && meta.displayName.trim() ? meta.displayName.trim() : workspace
+  return { project: (repo?.path && pathBasename(repo.path)) || null, workspace: title }
 }
 
 // ---- последнее сообщение агента --------------------------------------------
@@ -184,23 +255,6 @@ export function workspaceName(worktreeId) {
 // персистит в userData/agent-hooks/last-status.json, а воркер — обычный
 // Node-процесс, так что файл можно прочитать напрямую. Файл внутренний,
 // может поменяться между версиями Orca — тогда просто не будет строки 💬.
-export function orcaStatusFile() {
-  const bases = [
-    process.env.APPDATA,
-    process.env.HOME ? join(process.env.HOME, 'Library', 'Application Support') : null,
-    process.env.HOME ? join(process.env.HOME, '.config') : null
-  ].filter(Boolean)
-  for (const base of bases) {
-    const path = join(base, 'orca', 'agent-hooks', 'last-status.json')
-    try {
-      readFileSync(path)
-      return path
-    } catch {
-      // не нашлось — пробуем следующую базу
-    }
-  }
-  return null
-}
 
 const ASSISTANT_PREVIEW_MAX_CHARS = 700
 const STATUS_READ_ATTEMPTS = 8
@@ -437,15 +491,17 @@ export default function activate(orca) {
     const receivedAt = payload.receivedAt ?? Date.now()
     const when = formatTime(receivedAt)
     const language = config.language === 'ru' ? 'ru' : 'en'
-    const label =
-      language === 'ru'
-        ? { status: 'Статус агента', project: 'Проект' }
-        : { status: 'Agent status', project: 'Project' }
+    const statusLabel = language === 'ru' ? 'Статус агента' : 'Agent status'
     const quote = await readAssistantMessage(payload.paneKey, receivedAt)
+    const worktree = describeWorktree(payload.worktreeId)
     const lines = [
       `🤖 Orca · ${when}`,
-      `${label.status}: ${localizeStatus(payload.state, language)}`,
-      payload.worktreeId ? `${label.project}\n  ${workspaceName(payload.worktreeId)}` : null
+      `${statusLabel}: ${localizeStatus(payload.state, language)}`,
+      worktree?.project ? escHtml(worktree.project) : null,
+      // воркспейс-корень репо не дублирует строку проекта
+      worktree?.workspace && worktree.workspace !== worktree.project
+        ? `  ${escHtml(worktree.workspace)}`
+        : null
     ].filter(Boolean)
     if (quote) lines.push('', previewLine(quote))
     const text = lines.join('\n')
