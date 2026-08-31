@@ -25,7 +25,7 @@ Telegram Bot API:
 
 1. Settings → Plugins → включить систему плагинов.
 2. Добавить источник — git URL с тегом:
-   `https://github.com/NooBiToo/orca-telegram-notifications#v0.1.0`
+   `https://github.com/NooBiToo/orca-telegram-notifications#v0.3.0`
    (или локальную папку через Development).
 3. Установить, Review & enable.
 
