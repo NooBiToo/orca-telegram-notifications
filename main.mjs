@@ -147,6 +147,93 @@ export function describeState(state, language = 'en') {
   return { emoji: '🤖', title: (language === 'ru' ? 'Статус: ' : 'Status: ') + String(state ?? '') }
 }
 
+// Короткие слова для строки «Статус агента: …» — в отличие от STATE_META
+// (развернутые фразы) тут именно значение статуса.
+const STATUS_I18N = {
+  done: { ru: 'готово', en: 'done' },
+  attention: { ru: 'ждёт внимания', en: 'needs attention' },
+  needs: { ru: 'ждёт внимания', en: 'needs attention' },
+  stuck: { ru: 'застрял', en: 'stuck' },
+  error: { ru: 'ошибка', en: 'error' },
+  waiting: { ru: 'ожидает', en: 'waiting' },
+  working: { ru: 'работает', en: 'working' },
+  idle: { ru: 'простаивает', en: 'idle' }
+}
+
+export function localizeStatus(state, language = 'en') {
+  const s = String(state ?? '').toLowerCase()
+  for (const key of STATE_KEYS) {
+    if (s.includes(key)) return STATUS_I18N[key][language] ?? STATUS_I18N[key].en
+  }
+  return String(state ?? '')
+}
+
+// worktreeId приходит как «uuid::C:/путь/до/воркспейса» — для человека
+// показываем только последнее имя пути.
+export function workspaceName(worktreeId) {
+  const raw = String(worktreeId ?? '')
+  const path = raw.includes('::') ? raw.split('::').pop() : raw
+  const segments = path.split(/[\\/]+/).filter(Boolean)
+  return segments[segments.length - 1] ?? raw
+}
+
+// ---- последнее сообщение агента --------------------------------------------
+
+// Хост кладёт в plugin-payload только 4 поля события, отрезая
+// lastAssistantMessage (ответ агента из хука Stop). Полный статус Orca
+// персистит в userData/agent-hooks/last-status.json, а воркер — обычный
+// Node-процесс, так что файл можно прочитать напрямую. Файл внутренний,
+// может поменяться между версиями Orca — тогда просто не будет строки 💬.
+export function orcaStatusFile() {
+  const bases = [
+    process.env.APPDATA,
+    process.env.HOME ? join(process.env.HOME, 'Library', 'Application Support') : null,
+    process.env.HOME ? join(process.env.HOME, '.config') : null
+  ].filter(Boolean)
+  for (const base of bases) {
+    const path = join(base, 'orca', 'agent-hooks', 'last-status.json')
+    try {
+      readFileSync(path)
+      return path
+    } catch {
+      // не нашлось — пробуем следующую базу
+    }
+  }
+  return null
+}
+
+const ASSISTANT_PREVIEW_MAX_CHARS = 700
+const STATUS_READ_ATTEMPTS = 8
+const STATUS_READ_DELAY_MS = 150
+
+// Хост пишет файл с дебаунсом 250мс, поэтому ждём: запись считается свежей,
+// когда её receivedAt догнал receivedAt события.
+export async function readAssistantMessage(paneKey, receivedAt) {
+  const path = orcaStatusFile()
+  if (!path || !paneKey) return null
+  for (let attempt = 0; attempt < STATUS_READ_ATTEMPTS; attempt++) {
+    if (attempt > 0) await new Promise((resolve) => setTimeout(resolve, STATUS_READ_DELAY_MS))
+    try {
+      const parsed = JSON.parse(readFileSync(path, 'utf8'))
+      const entry = parsed?.entries?.[paneKey]
+      if (!entry || entry.receivedAt < receivedAt) continue
+      const message = entry.payload?.lastAssistantMessage
+      return typeof message === 'string' && message.trim() ? message.trim() : null
+    } catch {
+      continue
+    }
+  }
+  return null
+}
+
+function previewLine(message) {
+  const preview =
+    message.length > ASSISTANT_PREVIEW_MAX_CHARS
+      ? message.slice(0, ASSISTANT_PREVIEW_MAX_CHARS).trimEnd() + '…'
+      : message
+  return `💬 ${escHtml(preview)}`
+}
+
 function escHtml(value) {
   return String(value)
     .replace(/&/g, '&amp;')
@@ -169,7 +256,7 @@ export function buildMessage(config, payload, now = Date.now()) {
       .replaceAll('{{emoji}}', emoji)
       .replaceAll('{{title}}', escHtml(title))
       .replaceAll('{{worktree}}', worktree ?? '—')
-      .replaceAll('{{state}}', escHtml(String(payload.state ?? '')))
+      .replaceAll('{{state}}', escHtml(localizeStatus(payload.state, language)))
       .replaceAll('{{time}}', time)
       .replaceAll('{{pane}}', pane ?? '—')
   }
@@ -347,15 +434,21 @@ export default function activate(orca) {
       orca.log(`тихо: ${decision.reason} (${payload.paneKey})`)
       return
     }
-    const when = formatTime(payload.receivedAt ?? Date.now())
-    const text = [
+    const receivedAt = payload.receivedAt ?? Date.now()
+    const when = formatTime(receivedAt)
+    const language = config.language === 'ru' ? 'ru' : 'en'
+    const label =
+      language === 'ru'
+        ? { status: 'Статус агента', project: 'Проект' }
+        : { status: 'Agent status', project: 'Project' }
+    const quote = await readAssistantMessage(payload.paneKey, receivedAt)
+    const lines = [
       `🤖 Orca · ${when}`,
-      `Статус агента: ${payload.state}`,
-      payload.worktreeId ? `Воркспейс: ${payload.worktreeId}` : null,
-      `Панель: ${payload.paneKey}`
-    ]
-      .filter(Boolean)
-      .join('\n')
+      `${label.status}: ${localizeStatus(payload.state, language)}`,
+      payload.worktreeId ? `${label.project}\n  ${workspaceName(payload.worktreeId)}` : null
+    ].filter(Boolean)
+    if (quote) lines.push('', previewLine(quote))
+    const text = lines.join('\n')
     const result = await sendTelegram(config, text)
     if (result.ok) {
       await saveThrottle(orca)
